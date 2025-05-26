@@ -1,104 +1,82 @@
 #PROCESAMIENTO DE DATOS CRUDOS DE XDR - IDENTIFICACION Y CUANTIFICACION DE SEÑALES DE PHA
 #Script creado por ANDREA TREJO y LUIS MARIO HERNANDEZ-SOTO 05/2025
 
-import numpy as np
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-from scipy.integrate import simpson
-from scipy.signal import peak_widths
-import math
 from scipy.signal import find_peaks
+import os
 
-# Cargar archivo
-XDR = "8NaCl6AC_no_tab.tsv"  # Reemplaza con tu archivo
-data = pd.read_csv(XDR, sep='\t')
-#print(data.head())
+# Constantes
+K_SCHERRER = 0.9
+LONGITUD_ONDA = 1.5406  # Å (Cu Kα)
+PHB_PEAKS = [13.5, 16.9, 22.5, 25.6]
 
-# Extraer columnas
-theta = data.iloc[:, 0].values  # Ángulo 2θ
-intensidad = data.iloc[:, 1].values  # Intensive
+# Archivos
+archivos = [f for f in os.listdir() if f.endswith('.tsv')]
+salida_txt = open("resultados_cristalinidad.txt", "w")
 
-# Graficar difractograma
-plt.figure(figsize=(10, 6))
-plt.plot(theta, intensidad, label='Difractograma')
-plt.xlabel('2θ (°)')
-plt.ylabel('Intensidad (u.a.)')
-plt.title('Difracción de rayos X - PHA')
-plt.legend()
-plt.grid(True)
-plt.savefig("difractograma.png", dpi=600)
-plt.show()
+for archivo in archivos:
+    df = pd.read_csv(archivo, sep="\t")
+    angulo = df.iloc[:, 0].values
+    intensidad = df.iloc[:, 1].values
 
-#Paso 2: Encontrar los picos principales
-# Encontrar picos
-#picos, _ = find_peaks(intensidad, height=100, distance=10)  # Ajusta 'height' y 'distance' según tu muestra
-# Umbral dinámico: percentil 75
-umbral_pico = np.percentile(intensidad, 75)
-picos, _ = find_peaks(intensidad, height=umbral_pico, distance=10)
+    # Detección de picos solo con distancia mínima
+    picos, _ = find_peaks(intensidad, distance=10)
 
-# Mostrar picos detectados
-for i in picos:
-    print(f"Pico en 2θ = {theta[i]:.2f}° con intensidad = {intensidad[i]:.2f}")
+    # Calcular índice de cristalinidad
+    if len(picos) > 0:
+        intensidad_total = np.sum(intensidad)
+        intensidad_cristalina = np.sum(intensidad[picos])
+        indice_cristalinidad = (intensidad_cristalina / intensidad_total) * 100
+    else:
+        indice_cristalinidad = np.nan
 
-# Paso 3: Calcular el índice de cristalinidad Método de dos áreas: comparar área de
-# picos vs.fondo amorfo
+    # Calcular tamaño de cristalita
+    if len(picos) > 0:
+        pico_max = picos[np.argmax(intensidad[picos])]
+        fwhm = 0.2  # Valor fijo o estimado real si tienes los datos
+        theta_rad = np.deg2rad(angulo[pico_max] / 2)
+        tamano_cristalita = (K_SCHERRER * LONGITUD_ONDA) / (fwhm * np.cos(theta_rad))
+    else:
+        tamano_cristalita = np.nan
 
-# Área total bajo la curva
-area_total = simpson(intensidad, theta)
+    # Comparación con picos de PHB
+    coincidencias = []
+    for pico_teorico in PHB_PEAKS:
+        if len(picos) > 0:
+            diferencias = np.abs(angulo[picos] - pico_teorico)
+            if np.min(diferencias) < 0.3:
+                coincidencias.append(f"Pico teórico: {pico_teorico}° — Pico encontrado: {angulo[picos][np.argmin(diferencias)]:.2f}°")
+            else:
+                coincidencias.append(f"Pico teórico: {pico_teorico}° — No se detectaron picos")
+        else:
+            coincidencias.append(f"Pico teórico: {pico_teorico}° — No se detectaron picos")
 
-# Umbral para separar cristalino y amorfo
-umbral = np.percentile(intensidad, 50)
+    # Imprimir resultados al archivo
+    salida_txt.write(f"Archivo: {archivo}\n")
+    if len(picos) > 0:
+        for i in picos:
+            salida_txt.write(f"  Pico en 2θ = {angulo[i]:.2f}° con intensidad = {intensidad[i]:.2f}\n")
+    salida_txt.write(f"  Índice de cristalinidad: {indice_cristalinidad:.2f}%\n" if not np.isnan(indice_cristalinidad) else "  Índice de cristalinidad: nan%\n")
+    salida_txt.write(f"  Tamaño de cristalita (Scherrer): {tamano_cristalita:.2f} nm\n" if not np.isnan(tamano_cristalita) else "  No se detectó pico principal para calcular Scherrer.\n")
+    salida_txt.write("  Comparación con picos PHB:\n")
+    for c in coincidencias:
+        salida_txt.write(f"    {c}\n")
+    salida_txt.write("\n" + "-"*60 + "\n\n")
 
-# Intensidad cristalina
-intensidad_cristalina = np.where(intensidad > umbral, intensidad, 0)
+    # Graficar
+    plt.figure(figsize=(10, 5))
+    plt.plot(angulo, intensidad, label="Difractograma")
+    if len(picos) > 0:
+        plt.plot(angulo[picos], intensidad[picos], "rx", label="Picos detectados")
+    plt.xlabel("2θ (°)")
+    plt.ylabel("Intensidad (u.a.)")
+    plt.title(f"Difractograma: {archivo}")
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig(f"{archivo}_difractograma.png")
+    plt.close()
 
-# Área cristalina
-area_cristalina = simpson(intensidad_cristalina, theta)
-
-# Índice de cristalinidad
-cristalinidad = (area_cristalina / area_total) * 100
-print(f"Índice de cristalinidad: {cristalinidad:.2f}%")
-
-# Paso 4: Calcular el tamaño de cristalita(ecuación de Scherrer)
-
-# Parámetros para la ecuación de Scherrer
-K = 0.9
-lambda_radiacion = 1.5406  # Cu Kα en Å
-
-# Tomar el primer pico fuerte para ejemplo
-pico_principal = picos[0]
-FWHM = peak_widths(intensidad, [pico_principal], rel_height=0.5)[0][0]
-beta_rad = (FWHM * (np.pi / 180))  # Convertir a radianes
-theta_rad = (theta[pico_principal] / 2) * (np.pi / 180)
-
-# Cálculo del tamaño de cristalita
-L = (K * lambda_radiacion) / (beta_rad * np.cos(theta_rad))
-print(f"Tamaño de cristalita (Scherrer): {L:.2f} nm")
-
-# Paso 5: Comparar con picos de PHB / PHBV
-# Picos conocidos de PHB
-picos_PHB = [13.5, 16.9, 22.5, 25.6]
-
-# Comparar
-print("\nComparación con picos PHB:")
-for pico_ref in picos_PHB:
-    diferencias = np.abs(theta[picos] - pico_ref)
-    idx_min = np.argmin(diferencias)
-    pico_encontrado = theta[picos[idx_min]]
-    print(f"Pico teórico: {pico_ref:.1f}° — Pico encontrado: {pico_encontrado:.2f}°")
-
-with open("resultados.txt", "w") as f:
-    f.write("Resultados del análisis de difracción:\n\n")
-
-    for i in picos:
-        f.write(f"Pico en 2θ = {theta[i]:.2f}° con intensidad = {intensidad[i]:.2f}\n")
-
-    f.write(f"\nÍndice de cristalinidad: {cristalinidad:.2f}%\n")
-    f.write(f"Tamaño de cristalita (Scherrer): {L:.2f} nm\n")
-
-    f.write("\nComparación con picos PHB:\n")
-    for pico_ref in picos_PHB:
-        diferencias = np.abs(theta[picos] - pico_ref)
-        idx_min = np.argmin(diferencias)
-        pico_encontrado = theta[picos[idx_min]]
-        f.write(f"Pico teórico: {pico_ref:.1f}° — Pico encontrado: {pico_encontrado:.2f}°\n")
+salida_txt.close()
+print("Análisis completo. Resultados en 'resultados_cristalinidad.txt'")
